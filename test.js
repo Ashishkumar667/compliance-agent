@@ -562,8 +562,9 @@ app.get('/api/compliance/incidents/:id/details', async (req, res, next) => {
 app.post('/api/compliance/machines/:id/collect-investigation', async (req, res, next) => {
   try {
     const agent = req.complianceAgent;
-    const comment = req.body.comment;
+    const comment = req.body.Comment;
     const result = await agent.reporter.collectInvestigationPackage(req.params.id, comment);
+    console.log('Investigation package result:', result)
 
     res.json({
       success: true,

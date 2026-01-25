@@ -10,6 +10,7 @@ const helmet = require('helmet');
 const morgan = require('morgan');
 const axios = require('axios');
 const { authenticateRequest, clearCache, getCacheStats } = require('./middleware');
+require('dotenv').config();
 
 // ============================================================================
 // Server Configuration

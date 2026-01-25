@@ -1,45 +1,48 @@
-// ============================================================================
-// Azure Compliance Agent - Complete Implementation
-// Features: Compliance Reporting, Automated Remediation, Continuous Monitoring
-// ============================================================================
 
 const axios = require('axios');
 const msal = require('@azure/msal-node');
-require('dotenv').config();
+
 // ============================================================================
-// Configuration
+// Configuration Helper
 // ============================================================================
 
-const config = {
-  auth: {
-    clientId: process.env.AZURE_CLIENT_ID,
-    clientSecret: process.env.AZURE_CLIENT_SECRET,
-    tenantId: process.env.AZURE_TENANT_ID,
-  },
-  resources: {
-    defender: process.env.DEFENDER_RESOURCE_ID || 'https://api.securitycenter.microsoft.com',
-    sentinel: process.env.SENTINEL_WORKSPACE_ID,
-    sentinelResourceGroup: process.env.SENTINEL_RESOURCE_GROUP,
-    subscriptionId: process.env.AZURE_SUBSCRIPTION_ID,
-    firewallPolicy: process.env.FIREWALL_POLICY_NAME,
-    firewallResourceGroup: process.env.FIREWALL_RESOURCE_GROUP,
-  },
-  monitoring: {
-    pollingIntervalMinutes: 15,
-    alertThresholds: {
-      newDevices: 5,
-      newIncidents: 1,
-      riskyUsers: 3,
+function buildConfig(credentials = {}) {
+  return {
+    auth: {
+      clientId: credentials.clientId || process.env.AZURE_CLIENT_ID,
+      clientSecret: credentials.clientSecret || process.env.AZURE_CLIENT_SECRET,
+      tenantId: credentials.tenantId || process.env.AZURE_TENANT_ID,
+    },
+    resources: {
+      defender: credentials.defenderResourceId || process.env.DEFENDER_RESOURCE_ID || 'https://api.securitycenter.microsoft.com',
+      sentinel: credentials.sentinelWorkspaceId || process.env.SENTINEL_WORKSPACE_ID,
+      sentinelResourceGroup: credentials.sentinelResourceGroup || process.env.SENTINEL_RESOURCE_GROUP,
+      subscriptionId: credentials.subscriptionId || process.env.AZURE_SUBSCRIPTION_ID,
+      firewallPolicy: credentials.firewallPolicy || process.env.FIREWALL_POLICY_NAME,
+      firewallResourceGroup: credentials.firewallResourceGroup || process.env.FIREWALL_RESOURCE_GROUP,
+    },
+    monitoring: {
+      pollingIntervalMinutes: 15,
+      alertThresholds: {
+        newDevices: 5,
+        newIncidents: 1,
+        riskyUsers: 3,
+      }
     }
-  }
-};
+  };
+}
 
 // ============================================================================
 // Authentication Manager with Auto-Refresh
 // ============================================================================
 
 class AuthManager {
-  constructor() {
+  constructor(config) {
+    if (!config.auth.clientId || !config.auth.clientSecret || !config.auth.tenantId) {
+      throw new Error('Missing required auth credentials: clientId, clientSecret, tenantId');
+    }
+
+    this.config = config;
     this.msalClient = new msal.ConfidentialClientApplication({
       auth: {
         clientId: config.auth.clientId,
@@ -63,20 +66,31 @@ class AuthManager {
 
     // Request new token
     const scopes = Array.isArray(scope) ? scope : [scope];
-    const result = await this.msalClient.acquireTokenByClientCredential({
-      scopes,
-    });
+    
+    try {
+      const result = await this.msalClient.acquireTokenByClientCredential({
+        scopes,
+      });
 
-    this.tokens[cacheKey] = {
-      accessToken: result.accessToken,
-      expiresAt: result.expiresOn ? result.expiresOn.getTime() : Date.now() + 3600000,
-    };
-    console.log("access token", result.accessToken);
-    return result.accessToken;
+      this.tokens[cacheKey] = {
+        accessToken: result.accessToken,
+        expiresAt: result.expiresOn ? result.expiresOn.getTime() : Date.now() + 3600000,
+      };
+      
+      console.log(`✅ Token acquired for scope: ${scopes[0].substring(0, 30)}...`);
+      return result.accessToken;
+    } catch (error) {
+      console.error('❌ Token acquisition failed:', {
+        error: error.errorCode || error.message,
+        tenant: this.config.auth.tenantId.substring(0, 8) + '...',
+        scopes: scopes
+      });
+      throw error;
+    }
   }
 
   async getDefenderToken() {
-    return this.getToken([`${config.resources.defender}/.default`]);
+    return this.getToken([`${this.config.resources.defender}/.default`]);
   }
 
   async getGraphToken() {
@@ -160,86 +174,87 @@ class ApiClient {
 // ============================================================================
 
 class ComplianceReporter {
-  constructor(apiClient) {
+  constructor(apiClient, config) {
     this.api = apiClient;
+    this.config = config;
   }
 
   // Defender endpoints
   async getDeviceInventory() {
-    const url = `${config.resources.defender}/api/machines`;
+    const url = `${this.config.resources.defender}/api/machines`;
     return this.api.request(url, {}, 'defender');
   }
+
   async getSpecificDeviceInventory(machineId) {
-    const url = `${config.resources.defender}/api/machines/${machineId}`;
+    const url = `${this.config.resources.defender}/api/machines/${machineId}`;
     return this.api.request(url, {}, 'defender');
   }
 
   async batchUpdateAlert(body) {
-  const url = `${config.resources.defender}/api/alerts/batchUpdate`;
-  return this.api.request(url, {
-    method: 'POST',
-    body
-  }, 'defender');
-}
-
+    const url = `${this.config.resources.defender}/api/alerts/batchUpdate`;
+    return this.api.request(url, {
+      method: 'POST',
+      body
+    }, 'defender');
+  }
 
   async getDeviceHealth() {
-    const url = `${config.resources.defender}/api/deviceavinfo`;
+    const url = `${this.config.resources.defender}/api/deviceavinfo`;
     return this.api.request(url, { method: 'GET' }, 'defender');
   }
 
-  async getMachineTag(tag){
-    const url = `${config.resources.defender}/api/machines/findbytag?tag=${tag}&useStartsWithFilter={true/false}`;
+  async getMachineTag(tag) {
+    const url = `${this.config.resources.defender}/api/machines/findbytag?tag=${tag}&useStartsWithFilter=true`;
     return this.api.request(url, {}, 'defender');
   }
 
   async getSecurityAlerts(filters = {}) {
-    const url = `${config.resources.defender}/api/alerts`;
+    const url = `${this.config.resources.defender}/api/alerts`;
     return this.api.request(url, { params: filters }, 'defender');
   }
 
   async CreateAlertByRefrence(body) {
-  const url = `${config.resources.defender}/api/alerts/createAlertByReference`;
-  return this.api.request(url, {
-    method: 'POST',
-    body
-  }, 'defender');
-}
+    const url = `${this.config.resources.defender}/api/alerts/createAlertByReference`;
+    return this.api.request(url, {
+      method: 'POST',
+      body
+    }, 'defender');
+  }
 
   async getVulnerabilities() {
-    const url = `${config.resources.defender}/api/vulnerabilities`;
+    const url = `${this.config.resources.defender}/api/vulnerabilities`;
     return this.api.request(url, {}, 'defender');
   }
 
   async getSecurityRecommendations() {
-    const url = `${config.resources.defender}/api/recommendations`;
+    const url = `${this.config.resources.defender}/api/recommendations`;
     return this.api.request(url, {}, 'defender');
   }
 
   // Sentinel endpoints
   async getSentinelIncidents() {
-    const url = `https://management.azure.com/subscriptions/${config.resources.subscriptionId}/resourceGroups/${config.resources.sentinelResourceGroup}/providers/Microsoft.OperationalInsights/workspaces/${config.resources.sentinel}/providers/Microsoft.SecurityInsights/incidents?api-version=2023-02-01`;
+    const url = `https://management.azure.com/subscriptions/${this.config.resources.subscriptionId}/resourceGroups/${this.config.resources.sentinelResourceGroup}/providers/Microsoft.OperationalInsights/workspaces/${this.config.resources.sentinel}/providers/Microsoft.SecurityInsights/incidents?api-version=2023-02-01`;
     return this.api.request(url);
   }
 
   async getIncidentAlerts(incidentId) {
-    const url = `https://management.azure.com/subscriptions/${config.resources.subscriptionId}/resourceGroups/${config.resources.sentinelResourceGroup}/providers/Microsoft.OperationalInsights/workspaces/${config.resources.sentinel}/providers/Microsoft.SecurityInsights/incidents/${incidentId}/alerts?api-version=2023-02-01`;
+    const url = `https://management.azure.com/subscriptions/${this.config.resources.subscriptionId}/resourceGroups/${this.config.resources.sentinelResourceGroup}/providers/Microsoft.OperationalInsights/workspaces/${this.config.resources.sentinel}/providers/Microsoft.SecurityInsights/incidents/${incidentId}/alerts?api-version=2023-02-01`;
     return this.api.request(url, { method: 'POST' });
   }
 
   async getIncidentEntities(incidentId) {
-    const url = `https://management.azure.com/subscriptions/${config.resources.subscriptionId}/resourceGroups/${config.resources.sentinelResourceGroup}/providers/Microsoft.OperationalInsights/workspaces/${config.resources.sentinel}/providers/Microsoft.SecurityInsights/incidents/${incidentId}/entities?api-version=2023-02-01`;
+    const url = `https://management.azure.com/subscriptions/${this.config.resources.subscriptionId}/resourceGroups/${this.config.resources.sentinelResourceGroup}/providers/Microsoft.OperationalInsights/workspaces/${this.config.resources.sentinel}/providers/Microsoft.SecurityInsights/incidents/${incidentId}/entities?api-version=2023-02-01`;
     return this.api.request(url, { method: 'POST' });
   }
 
   // Firewall endpoints
   async getFirewallPolicies() {
-    const url = `https://management.azure.com/subscriptions/${config.resources.subscriptionId}/resourceGroups/${config.resources.firewallResourceGroup}/providers/Microsoft.Network/firewallPolicies?api-version=2023-05-01`;
+    const url = `https://management.azure.com/subscriptions/${this.config.resources.subscriptionId}/resourceGroups/${this.config.resources.firewallResourceGroup}/providers/Microsoft.Network/firewallPolicies?api-version=2023-05-01`;
     return this.api.request(url);
   }
 
   async getRuleCollectionGroups() {
-    const url = `https://management.azure.com/subscriptions/${config.resources.subscriptionId}/resourceGroups/${config.resources.firewallResourceGroup}/providers/Microsoft.Network/firewallPolicies/${config.resources.firewallPolicy}/ruleCollectionGroups?api-version=2023-05-01`;
+    const url = `https://management.azure.com/subscriptions/${this.config.resources.subscriptionId}/resourceGroups/${this.config.resources.firewallResourceGroup}/providers/Microsoft.Network/firewallPolicies/${this.config.resources.firewallPolicy}/ruleCollectionGroups?api-version=2023-05-01`;
     return this.api.request(url);
   }
 
@@ -267,8 +282,8 @@ class ComplianceReporter {
   }
 
   async collectInvestigationPackage(machineId, body = {}) {
-  const url = `${config.resources.defender}/api/machines/${machineId}/collectInvestigationPackage`;
-  return this.api.request(url, { method: "POST", body }, "defender");
+    const url = `${this.config.resources.defender}/api/machines/${machineId}/collectInvestigationPackage`;
+    return this.api.request(url, { method: "POST", body }, "defender");
   }
   
   async getRiskyUsers() {
@@ -276,159 +291,119 @@ class ComplianceReporter {
     return this.api.request(url, {}, 'graph');
   }
 
-  
-  // Generate compliance report
-  // async generateComplianceReport() {
-  //   console.log('🔍 Starting compliance evidence collection...');
+  async generateComplianceReport() {
+    console.log('🔍 Starting compliance evidence collection...');
     
-  //   const evidence = {
-  //     timestamp: new Date().toISOString(),
-  //     devices: await this.getDeviceInventory(),
-  //     alerts: await this.getSecurityAlerts(),
-  //     vulnerabilities: await this.getVulnerabilities(),
-  //     recommendations: await this.getSecurityRecommendations(),
-  //     incidents: await this.getSentinelIncidents(),
-  //     firewallPolicies: await this.getFirewallPolicies(),
-  //     signIns: await this.getSignInLogs(),
-  //     directoryAudits: await this.getDirectoryAudits(),
-  //     caPolicies: await this.getConditionalAccessPolicies(),
-  //     riskyUsers: await this.getRiskyUsers(),
-  //   };
+    const evidence = {
+      timestamp: new Date().toISOString(),
+    };
 
-  //   // Map to compliance controls (simplified example)
-  //   const report = {
-  //     metadata: {
-  //       generatedAt: evidence.timestamp,
-  //       framework: 'UAE IA / ISO 27001 / NESA',
-  //       totalControls: 847,
-  //     },
-  //     summary: {
-  //       devicesProtected: evidence.devices?.value?.filter(d => d.healthStatus === 'Active').length || 0,
-  //       devicesTotal: evidence.devices?.value?.length || 0,
-  //       activeAlerts: evidence.alerts?.value?.filter(a => a.status === 'New').length || 0,
-  //       criticalVulnerabilities: evidence.vulnerabilities?.value?.filter(v => v.severity === 'Critical').length || 0,
-  //       mfaCompliance: this.calculateMfaCompliance(evidence),
-  //     },
-  //     evidence,
-  //   };
-
-  //   console.log('✅ Compliance report generated');
-  //   return report;
-  // }
-async generateComplianceReport() {
-  console.log('🔍 Starting compliance evidence collection...');
-  
-  const evidence = {
-    timestamp: new Date().toISOString(),
-  };
-
-  // Defender APIs
-  try {
-    evidence.devices = await this.getDeviceInventory();
-  } catch (error) {
-    console.warn('⚠️  Could not get devices:', error.response?.status, error.message);
-    evidence.devices = { value: [] };
-  }
-
-  try {
-    evidence.alerts = await this.getSecurityAlerts();
-  } catch (error) {
-    console.warn('⚠️  Could not get alerts:', error.response?.status, error.message);
-    evidence.alerts = { value: [] };
-  }
-
-  try {
-    evidence.vulnerabilities = await this.getVulnerabilities();
-  } catch (error) {
-    console.warn('⚠️  Could not get vulnerabilities:', error.response?.status, error.message);
-    evidence.vulnerabilities = { value: [] };
-  }
-
-  try {
-    evidence.recommendations = await this.getSecurityRecommendations();
-  } catch (error) {
-    console.warn('⚠️  Could not get recommendations:', error.response?.status, error.message);
-    evidence.recommendations = { value: [] };
-  }
-
-  // Sentinel APIs (skip if not configured)
-  if (config.resources.sentinel && config.resources.sentinelResourceGroup) {
+    // Defender APIs
     try {
-      evidence.incidents = await this.getSentinelIncidents();
+      evidence.devices = await this.getDeviceInventory();
     } catch (error) {
-      console.warn('⚠️  Could not get Sentinel incidents:', error.response?.status, error.message);
+      console.warn('⚠️  Could not get devices:', error.response?.status, error.message);
+      evidence.devices = { value: [] };
+    }
+
+    try {
+      evidence.alerts = await this.getSecurityAlerts();
+    } catch (error) {
+      console.warn('⚠️  Could not get alerts:', error.response?.status, error.message);
+      evidence.alerts = { value: [] };
+    }
+
+    try {
+      evidence.vulnerabilities = await this.getVulnerabilities();
+    } catch (error) {
+      console.warn('⚠️  Could not get vulnerabilities:', error.response?.status, error.message);
+      evidence.vulnerabilities = { value: [] };
+    }
+
+    try {
+      evidence.recommendations = await this.getSecurityRecommendations();
+    } catch (error) {
+      console.warn('⚠️  Could not get recommendations:', error.response?.status, error.message);
+      evidence.recommendations = { value: [] };
+    }
+
+    // Sentinel APIs (skip if not configured)
+    if (this.config.resources.sentinel && this.config.resources.sentinelResourceGroup) {
+      try {
+        evidence.incidents = await this.getSentinelIncidents();
+      } catch (error) {
+        console.warn('⚠️  Could not get Sentinel incidents:', error.response?.status, error.message);
+        evidence.incidents = { value: [] };
+      }
+    } else {
+      console.log('ℹ️  Sentinel not configured, skipping...');
       evidence.incidents = { value: [] };
     }
-  } else {
-    console.log('ℹ️  Sentinel not configured, skipping...');
-    evidence.incidents = { value: [] };
-  }
 
-  // Firewall APIs (skip if not configured) - COMMENTED OUT
-  if (config.resources.firewallPolicy && config.resources.firewallResourceGroup) {
-    try {
-      evidence.firewallPolicies = await this.getFirewallPolicies();
-    } catch (error) {
-      console.warn('⚠️  Could not get firewall policies:', error.message);
+    // Firewall APIs (skip if not configured)
+    if (this.config.resources.firewallPolicy && this.config.resources.firewallResourceGroup) {
+      try {
+        evidence.firewallPolicies = await this.getFirewallPolicies();
+      } catch (error) {
+        console.warn('⚠️  Could not get firewall policies:', error.message);
+        evidence.firewallPolicies = { value: [] };
+      }
+    } else {
       evidence.firewallPolicies = { value: [] };
     }
-  } else {
-    evidence.firewallPolicies = { value: [] };
+
+    // Graph APIs
+    try {
+      console.log('📊 Fetching sign-in logs from Graph API...');
+      evidence.signIns = await this.getSignInLogs();
+    } catch (error) {
+      console.warn('⚠️  Could not get sign-in logs:', error.response?.status, error.message);
+      evidence.signIns = { value: [] };
+    }
+
+    try {
+      evidence.directoryAudits = await this.getDirectoryAudits();
+    } catch (error) {
+      console.warn('⚠️  Could not get directory audits:', error.response?.status, error.message);
+      evidence.directoryAudits = { value: [] };
+    }
+
+    try {
+      evidence.caPolicies = await this.getConditionalAccessPolicies();
+    } catch (error) {
+      console.warn('⚠️  Could not get CA policies:', error.response?.status, error.message);
+      evidence.caPolicies = { value: [] };
+    }
+
+    try {
+      evidence.riskyUsers = await this.getRiskyUsers();
+    } catch (error) {
+      console.warn('⚠️  Could not get risky users:', error.response?.status, error.message);
+      evidence.riskyUsers = { value: [] };
+    }
+
+    // Generate report with whatever data we got
+    const report = {
+      metadata: {
+        generatedAt: evidence.timestamp,
+        framework: 'UAE IA / ISO 27001 / NESA',
+        totalControls: 847,
+      },
+      summary: {
+        devicesProtected: evidence.devices?.value?.filter(d => d.healthStatus === 'Active').length || 0,
+        devicesTotal: evidence.devices?.value?.length || 0,
+        activeAlerts: evidence.alerts?.value?.filter(a => a.status === 'New').length || 0,
+        criticalVulnerabilities: evidence.vulnerabilities?.value?.filter(v => v.severity === 'Critical').length || 0,
+        mfaCompliance: this.calculateMfaCompliance(evidence),
+      },
+      evidence,
+    };
+
+    console.log('✅ Compliance report generated (with available data)');
+    return report;
   }
-
-  // Graph APIs
-  try {
-    console.log('📊 Fetching sign-in logs from Graph API...');
-    evidence.signIns = await this.getSignInLogs();
-  } catch (error) {
-    console.warn('⚠️  Could not get sign-in logs:', error.response?.status, error.message);
-    evidence.signIns = { value: [] };
-  }
-
-  try {
-    evidence.directoryAudits = await this.getDirectoryAudits();
-  } catch (error) {
-    console.warn('⚠️  Could not get directory audits:', error.response?.status, error.message);
-    evidence.directoryAudits = { value: [] };
-  }
-
-  try {
-    evidence.caPolicies = await this.getConditionalAccessPolicies();
-  } catch (error) {
-    console.warn('⚠️  Could not get CA policies:', error.response?.status, error.message);
-    evidence.caPolicies = { value: [] };
-  }
-
-  try {
-    evidence.riskyUsers = await this.getRiskyUsers();
-  } catch (error) {
-    console.warn('⚠️  Could not get risky users:', error.response?.status, error.message);
-    evidence.riskyUsers = { value: [] };
-  }
-
-  // Generate report with whatever data we got
-  const report = {
-    metadata: {
-      generatedAt: evidence.timestamp,
-      framework: 'UAE IA / ISO 27001 / NESA',
-      totalControls: 847,
-    },
-    summary: {
-      devicesProtected: evidence.devices?.value?.filter(d => d.healthStatus === 'Active').length || 0,
-      devicesTotal: evidence.devices?.value?.length || 0,
-      activeAlerts: evidence.alerts?.value?.filter(a => a.status === 'New').length || 0,
-      criticalVulnerabilities: evidence.vulnerabilities?.value?.filter(v => v.severity === 'Critical').length || 0,
-      mfaCompliance: this.calculateMfaCompliance(evidence),
-    },
-    evidence,
-  };
-
-  console.log('✅ Compliance report generated (with available data)');
-  return report;
-}
 
   calculateMfaCompliance(evidence) {
-    // Placeholder - would need to fetch all users and check auth methods
     return {
       compliant: 0,
       nonCompliant: 0,
@@ -442,13 +417,13 @@ async generateComplianceReport() {
 // ============================================================================
 
 class RemediationEngine {
-  constructor(apiClient) {
+  constructor(apiClient, config) {
     this.api = apiClient;
+    this.config = config;
   }
 
-  // Defender remediation actions
   async isolateMachine(machineId, comment = 'Automated isolation due to security threat') {
-    const url = `${config.resources.defender}/api/machines/${machineId}/isolate`;
+    const url = `${this.config.resources.defender}/api/machines/${machineId}/isolate`;
     return this.api.request(url, {
       method: 'POST',
       body: { Comment: comment, IsolationType: 'Full' }
@@ -456,7 +431,7 @@ class RemediationEngine {
   }
 
   async unisolateMachine(machineId, comment = 'Device remediated and cleared') {
-    const url = `${config.resources.defender}/api/machines/${machineId}/unisolate`;
+    const url = `${this.config.resources.defender}/api/machines/${machineId}/unisolate`;
     return this.api.request(url, {
       method: 'POST',
       body: { Comment: comment }
@@ -464,7 +439,7 @@ class RemediationEngine {
   }
 
   async runAntiVirusScan(machineId, scanType = 'Full') {
-    const url = `${config.resources.defender}/api/machines/${machineId}/runAntiVirusScan`;
+    const url = `${this.config.resources.defender}/api/machines/${machineId}/runAntiVirusScan`;
     return this.api.request(url, {
       method: 'POST',
       body: { Comment: 'Automated security scan', ScanType: scanType }
@@ -472,7 +447,7 @@ class RemediationEngine {
   }
 
   async quarantineFile(machineId, filePath, comment = 'Malicious file detected') {
-    const url = `${config.resources.defender}/api/machines/${machineId}/stopAndQuarantineFile`;
+    const url = `${this.config.resources.defender}/api/machines/${machineId}/stopAndQuarantineFile`;
     return this.api.request(url, {
       method: 'POST',
       body: { Comment: comment, FilePath: filePath }
@@ -480,7 +455,7 @@ class RemediationEngine {
   }
 
   async restrictCodeExecution(machineId) {
-    const url = `${config.resources.defender}/api/machines/${machineId}/restrictCodeExecution`;
+    const url = `${this.config.resources.defender}/api/machines/${machineId}/restrictCodeExecution`;
     return this.api.request(url, {
       method: 'POST',
       body: { Comment: 'Restricting untrusted apps' }
@@ -488,33 +463,33 @@ class RemediationEngine {
   }
 
   async collectInvestigationPackage(machineId, body = {}) {
-  const url = `${config.resources.defender}/api/machines/${machineId}/collectInvestigationPackage`;
-  return this.api.request(url, { method: "POST", body }, "defender");
-}
+    const url = `${this.config.resources.defender}/api/machines/${machineId}/collectInvestigationPackage`;
+    return this.api.request(url, { method: "POST", body }, "defender");
+  }
 
-async unrestrictCodeExecution(machineId, body = {}) {
-  const url = `${config.resources.defender}/api/machines/${machineId}/unrestrictCodeExecution`;
-  return this.api.request(url, { method: "POST", body }, "defender");
-}
+  async unrestrictCodeExecution(machineId, body = {}) {
+    const url = `${this.config.resources.defender}/api/machines/${machineId}/unrestrictCodeExecution`;
+    return this.api.request(url, { method: "POST", body }, "defender");
+  }
 
-async offboardMachine(machineId, body = {}) {
-  const url = `${config.resources.defender}/api/machines/${machineId}/offboard`;
-  return this.api.request(url, { method: "POST", body }, "defender");
-}
+  async offboardMachine(machineId, body = {}) {
+    const url = `${this.config.resources.defender}/api/machines/${machineId}/offboard`;
+    return this.api.request(url, { method: "POST", body }, "defender");
+  }
 
-async runLiveResponse(machineId, body) {
-  const url = `${config.resources.defender}/api/machines/${machineId}/runliveresponse`;
-  return this.api.request(url, { method: "POST", body }, "defender");
-}
+  async runLiveResponse(machineId, body) {
+    const url = `${this.config.resources.defender}/api/machines/${machineId}/runliveresponse`;
+    return this.api.request(url, { method: "POST", body }, "defender");
+  }
 
   async blockIndicator(indicatorValue, indicatorType, action = 'Block', title = 'Automated threat block') {
-    const url = `${config.resources.defender}/api/indicators`;
+    const url = `${this.config.resources.defender}/api/indicators`;
     return this.api.request(url, {
       method: 'POST',
       body: {
         indicatorValue,
-        indicatorType, // 'IpAddress', 'DomainName', 'FileSha256'
-        action, // 'Alert', 'Block', 'Allowed'
+        indicatorType,
+        action,
         title,
         description: 'Automated threat intelligence block',
         severity: 'High',
@@ -522,9 +497,8 @@ async runLiveResponse(machineId, body) {
     }, 'defender');
   }
 
-  // Sentinel remediation actions
   async updateIncident(incidentId, updates) {
-    const url = `https://management.azure.com/subscriptions/${config.resources.subscriptionId}/resourceGroups/${config.resources.sentinelResourceGroup}/providers/Microsoft.OperationalInsights/workspaces/${config.resources.sentinel}/providers/Microsoft.SecurityInsights/incidents/${incidentId}?api-version=2023-02-01`;
+    const url = `https://management.azure.com/subscriptions/${this.config.resources.subscriptionId}/resourceGroups/${this.config.resources.sentinelResourceGroup}/providers/Microsoft.OperationalInsights/workspaces/${this.config.resources.sentinel}/providers/Microsoft.SecurityInsights/incidents/${incidentId}?api-version=2023-02-01`;
     return this.api.request(url, {
       method: 'PUT',
       body: { properties: updates }
@@ -532,23 +506,21 @@ async runLiveResponse(machineId, body) {
   }
 
   async runPlaybook(incidentId, logicAppResourceId) {
-    const url = `https://management.azure.com/subscriptions/${config.resources.subscriptionId}/resourceGroups/${config.resources.sentinelResourceGroup}/providers/Microsoft.OperationalInsights/workspaces/${config.resources.sentinel}/providers/Microsoft.SecurityInsights/incidents/${incidentId}/runPlaybook?api-version=2023-02-01`;
+    const url = `https://management.azure.com/subscriptions/${this.config.resources.subscriptionId}/resourceGroups/${this.config.resources.sentinelResourceGroup}/providers/Microsoft.OperationalInsights/workspaces/${this.config.resources.sentinel}/providers/Microsoft.SecurityInsights/incidents/${incidentId}/runPlaybook?api-version=2023-02-01`;
     return this.api.request(url, {
       method: 'POST',
       body: { logicAppsResourceId: logicAppResourceId }
     });
   }
 
-  // Firewall remediation actions
   async updateFirewallRules(ruleCollectionGroupName, rules) {
-    const url = `https://management.azure.com/subscriptions/${config.resources.subscriptionId}/resourceGroups/${config.resources.firewallResourceGroup}/providers/Microsoft.Network/firewallPolicies/${config.resources.firewallPolicy}/ruleCollectionGroups/${ruleCollectionGroupName}?api-version=2023-05-01`;
+    const url = `https://management.azure.com/subscriptions/${this.config.resources.subscriptionId}/resourceGroups/${this.config.resources.firewallResourceGroup}/providers/Microsoft.Network/firewallPolicies/${this.config.resources.firewallPolicy}/ruleCollectionGroups/${ruleCollectionGroupName}?api-version=2023-05-01`;
     return this.api.request(url, {
       method: 'PUT',
       body: { properties: { ruleCollections: rules } }
     });
   }
 
-  // Graph remediation actions
   async addMfaPhoneMethod(userId, phoneNumber) {
     const url = `https://graph.microsoft.com/v1.0/users/${userId}/authentication/phoneMethods`;
     return this.api.request(url, {
@@ -602,7 +574,6 @@ async runLiveResponse(machineId, body) {
     }, 'graph');
   }
 
-  // Orchestration: Auto-remediate based on findings
   async autoRemediate(findings) {
     console.log('🔧 Starting automated remediation...');
     const results = [];
@@ -618,7 +589,6 @@ async runLiveResponse(machineId, body) {
             break;
             
           case 'MISSING_MFA':
-            // This would need phone number - typically create ticket instead
             results.push({ finding, action: 'ticket_created', note: 'Manual MFA enrollment required' });
             break;
             
@@ -683,7 +653,6 @@ class ContinuousMonitor {
       findings: [],
     };
 
-    // Check for new unprotected devices
     const newDevices = this.findNewDevices(current.evidence.devices, this.baseline.evidence.devices);
     if (newDevices.length > 0) {
       drift.changes.push({
@@ -693,7 +662,6 @@ class ContinuousMonitor {
       });
     }
 
-    // Check for new high-severity incidents
     const newIncidents = this.findNewIncidents(current.evidence.incidents, this.baseline.evidence.incidents);
     if (newIncidents.length > 0) {
       drift.changes.push({
@@ -702,7 +670,6 @@ class ContinuousMonitor {
         incidents: newIncidents,
       });
       
-      // Auto-remediate high severity
       for (const incident of newIncidents.filter(i => i.properties?.severity === 'High')) {
         drift.findings.push({
           type: 'HIGH_SEVERITY_INCIDENT',
@@ -712,7 +679,6 @@ class ContinuousMonitor {
       }
     }
 
-    // Check for newly risky users
     const newRiskyUsers = this.findNewRiskyUsers(current.evidence.riskyUsers, this.baseline.evidence.riskyUsers);
     if (newRiskyUsers.length > 0) {
       drift.changes.push({
@@ -721,7 +687,6 @@ class ContinuousMonitor {
         users: newRiskyUsers,
       });
       
-      // Flag for remediation
       for (const user of newRiskyUsers.filter(u => u.riskLevel === 'high')) {
         drift.findings.push({
           type: 'COMPROMISED_USER',
@@ -731,13 +696,12 @@ class ContinuousMonitor {
       }
     }
 
-    // Check for new critical alerts
     const newAlerts = this.findNewAlerts(current.evidence.alerts, this.baseline.evidence.alerts);
     if (newAlerts.length > 0) {
       drift.changes.push({
         type: 'NEW_ALERTS',
         count: newAlerts.length,
-        alerts: newAlerts.slice(0, 10), // Limit output
+        alerts: newAlerts.slice(0, 10),
       });
     }
 
@@ -780,36 +744,30 @@ class ContinuousMonitor {
 
     while (this.isRunning) {
       try {
-        // Detect drift
         const drift = await this.detectDrift();
 
-        // Auto-remediate findings
         if (drift.findings.length > 0) {
           console.log(`⚠️  Found ${drift.findings.length} issues requiring remediation`);
           await this.remediator.autoRemediate(drift.findings);
         }
 
-        // Send alerts if thresholds exceeded
         if (drift.changes.length > 0) {
           this.sendAlerts(drift);
         }
 
-        // Update baseline
         this.baseline = await this.reporter.generateComplianceReport();
 
       } catch (error) {
         console.error('❌ Monitoring error:', error.message);
       }
 
-      // Wait for next interval
-      const waitMs = config.monitoring.pollingIntervalMinutes * 60 * 1000;
-      console.log(`⏳ Next check in ${config.monitoring.pollingIntervalMinutes} minutes...`);
+      const waitMs = 15 * 60 * 1000;
+      console.log(`⏳ Next check in 15 minutes...`);
       await new Promise(resolve => setTimeout(resolve, waitMs));
     }
   }
 
   sendAlerts(drift) {
-    // Placeholder - would integrate with alerting system
     console.log('🚨 DRIFT ALERT:', JSON.stringify(drift, null, 2));
   }
 
@@ -820,15 +778,16 @@ class ContinuousMonitor {
 }
 
 // ============================================================================
-// Main Agent Orchestrator
+// Main Agent Orchestrator - NOW ACCEPTS CREDENTIALS
 // ============================================================================
 
 class ComplianceAgent {
-  constructor() {
-    this.auth = new AuthManager();
+  constructor(credentials = {}) {
+    this.config = buildConfig(credentials);
+    this.auth = new AuthManager(this.config);
     this.api = new ApiClient(this.auth);
-    this.reporter = new ComplianceReporter(this.api);
-    this.remediator = new RemediationEngine(this.api);
+    this.reporter = new ComplianceReporter(this.api, this.config);
+    this.remediator = new RemediationEngine(this.api, this.config);
     this.monitor = new ContinuousMonitor(this.api, this.reporter, this.remediator);
   }
 
@@ -838,7 +797,6 @@ class ComplianceAgent {
     console.log('✅ Agent ready');
   }
 
-  // Public API
   async generateReport() {
     return this.reporter.generateComplianceReport();
   }
@@ -861,32 +819,9 @@ class ComplianceAgent {
 }
 
 // ============================================================================
-// Usage Example
+// Export
 // ============================================================================
 
-async function main() {
-  try {
-    // Initialize agent
-    const agent = new ComplianceAgent();
-    await agent.initialize();
-
-    // Generate compliance report
-    const report = await agent.generateReport();
-    console.log('Compliance Summary:', report.summary);
-
-    // Check for drift
-    const drift = await agent.checkDrift();
-    console.log('Drift detected:', drift.changes.length, 'changes');
-
-    // Start continuous monitoring (runs indefinitely)
-    // await agent.startMonitoring();
-
-  } catch (error) {
-    console.error('Error:', error.message);
-  }
-}
-
-// Export for use as module
 module.exports = {
   ComplianceAgent,
   ComplianceReporter,
@@ -895,8 +830,3 @@ module.exports = {
   AuthManager,
   ApiClient,
 };
-
-// Run if executed directly
-if (require.main === module) {
-  main();
-}

@@ -667,6 +667,7 @@ app.get('/api/compliance/machine/tags', async(req, res, next) => {
 app.get('/api/compliance/vulnerabilities', async (req, res, next) => {
   try {
     const agent = req.complianceAgent;
+    const summarizer = req.query.summarizer;
     const vulns = await agent.reporter.getVulnerabilities();
 
     let data = [];
@@ -682,7 +683,8 @@ app.get('/api/compliance/vulnerabilities', async (req, res, next) => {
         v.severity && v.severity.toLowerCase() === req.query.severity.toLowerCase()
       );
     }
-
+    if(summarizer == "true"){
+      console.log(`🤖 Summarizing ${data.length} vulnerabilities with Grok AI...`);
     // Check if we should summarize
     if (shouldSummarize(req, data.length)) {
       console.log(`🤖 Summarizing ${data.length} vulnerabilities with Grok AI...`);
@@ -707,7 +709,7 @@ app.get('/api/compliance/vulnerabilities', async (req, res, next) => {
         });
       }
     }
-
+ }
     // Pagination with validation
     const page = Math.max(parseInt(req.query.page) || 1, 1);
     const limit = Math.min(Math.max(parseInt(req.query.limit) || 100, 1), 5000);

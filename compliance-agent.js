@@ -125,6 +125,7 @@ class ApiClient {
             break;
           case 'graph':
             token = await this.auth.getGraphToken();
+            // console.log(`Using graph token for request to ${url}`, token);
             break;
           default:
             token = await this.auth.getManagementToken();
@@ -140,6 +141,7 @@ class ApiClient {
           },
           data: options.body,
           params: options.params,
+          timeout: 180000,
         });
 
         return response.data;
@@ -257,13 +259,103 @@ class ComplianceReporter {
     const url = `https://management.azure.com/subscriptions/${this.config.resources.subscriptionId}/resourceGroups/${this.config.resources.firewallResourceGroup}/providers/Microsoft.Network/firewallPolicies/${this.config.resources.firewallPolicy}/ruleCollectionGroups?api-version=2023-05-01`;
     return this.api.request(url);
   }
+  async listIdpsSignatures(filters = [], search = "", orderBy = null, resultsPerPage = 20, skip = 0) {
+  const url = `https://management.azure.com/subscriptions/${this.config.resources.subscriptionId}/resourceGroups/${this.config.resources.firewallResourceGroup}/providers/Microsoft.Network/firewallPolicies/${this.config.resources.firewallPolicy}/listIdpsSignatures?api-version=2025-03-01`;
+  
+  const body = { 
+    search, 
+    resultsPerPage, 
+    skip 
+  };
 
+  if (orderBy) {
+    body.orderBy = orderBy;
+  }
+
+  if (filters && filters.length > 0) {
+    body.filters = filters;
+  }
+
+  const response = await this.api.request(url, { 
+    method: 'POST',
+    body: body  
+  });
+  return response;
+}
+
+  async getSignatureOverrides() {
+    const url = `https://management.azure.com/subscriptions/${this.config.resources.subscriptionId}/resourceGroups/${this.config.resources.firewallResourceGroup}/providers/Microsoft.Network/firewallPolicies/${this.config.resources.firewallPolicy}/signatureOverrides/default?api-version=2025-03-01`;
+    return this.api.request(url, { method: 'GET' });
+  }
+
+  async updateSignatureOverrides(signatureMap = {}) {
+    const id = `/subscriptions/${this.config.resources.subscriptionId}/resourceGroups/${this.config.resources.firewallResourceGroup}/providers/Microsoft.Network/firewallPolicies/${this.config.resources.firewallPolicy}/signatureOverrides/default`;
+    const url = `https://management.azure.com${id}?api-version=2025-03-01`;
+
+    const body = {
+      id,
+      name: "default",
+      type: "Microsoft.Network/firewallPolicies/signatureOverrides",
+      properties: {
+        signatures: signatureMap
+      }
+    };
+
+    return this.api.request(url, { method: 'PUT', body });
+  }
+
+  async listIdpsFilterOptions(filterName) {
+    const url = `https://management.azure.com/subscriptions/${this.config.resources.subscriptionId}/resourceGroups/${this.config.resources.firewallResourceGroup}/providers/Microsoft.Network/firewallPolicies/${this.config.resources.firewallPolicy}/listIdpsFilterOptions?api-version=2025-03-01`;
+
+    const body = { filterName };
+    return this.api.request(url, { method: 'POST' , body});
+  }
+ 
   // Graph endpoints
   async getSignInLogs(filters = {}) {
-    const filterQuery = filters.$filter ? `?$filter=${filters.$filter}` : '';
-    const url = `https://graph.microsoft.com/v1.0/auditLogs/signIns${filterQuery}`;
-    return this.api.request(url, {}, 'graph');
+  const filterParts = [];
+  
+  // Add user-provided filter if exists
+  if (filters.$filter) {
+    filterParts.push(filters.$filter);
   }
+  
+  // Add date range filter if provided, otherwise default to last 7 days
+  if (filters.startDate && filters.endDate) {
+    filterParts.push(`createdDateTime ge ${filters.startDate}`);
+    filterParts.push(`createdDateTime le ${filters.endDate}`);
+  } else {
+    const days = filters.days || 7;
+    const startDate = new Date();
+    startDate.setDate(startDate.getDate() - days);
+    filterParts.push(`createdDateTime ge ${startDate.toISOString()}`);
+  }
+  
+  // Build query parameters
+  const queryParams = [];
+  
+  if (filterParts.length > 0) {
+    queryParams.push(`$filter=${filterParts.join(' and ')}`);
+  }
+  
+  // Add top parameter (Microsoft Graph default is 100, max is 999)
+  if (filters.$top) {
+    queryParams.push(`$top=${Math.min(filters.$top, 999)}`);
+  }
+  
+  // Add orderby if specified
+  if (filters.$orderby) {
+    queryParams.push(`$orderby=${filters.$orderby}`);
+  }
+  
+  const queryString = queryParams.length > 0 ? `?${queryParams.join('&')}` : '';
+  const url = `https://graph.microsoft.com/v1.0/auditLogs/signIns${queryString}`;
+  
+  console.log(`📊 Fetching sign-ins from Graph API`);
+  console.log(`URL: ${url}`);
+  
+  return this.api.request(url, {}, 'graph');
+}
 
   async getDirectoryAudits(filters = {}) {
     const filterQuery = filters.$filter ? `?$filter=${filters.$filter}` : '';
@@ -290,6 +382,55 @@ class ComplianceReporter {
     const url = `https://graph.microsoft.com/v1.0/identityProtection/riskyUsers`;
     return this.api.request(url, {}, 'graph');
   }
+
+  async getUsersWithMfaStatus() {
+  try {
+    // Get all users
+    const usersUrl = `https://graph.microsoft.com/v1.0/users?$select=id,displayName,userPrincipalName,accountEnabled`;
+    const usersResponse = await this.api.request(usersUrl, {}, 'graph');
+    const users = usersResponse.value || [];
+    
+    console.log(`📊 Checking MFA status for ${users.length} users...`);
+    
+    const usersWithMfaStatus = [];
+    
+    // Check MFA for each user (limit to avoid rate limiting)
+    const limitedUsers = users.slice(0, 50); // Check first 50 users
+    
+    for (const user of limitedUsers) {
+      if (!user.accountEnabled) continue; // Skip disabled users
+      
+      try {
+        const authMethods = await this.getUserAuthMethods(user.id);
+        const methods = authMethods.value || [];
+        
+        // Check if user has MFA methods (anything other than just password)
+        const hasMfa = methods.some(method => 
+          method['@odata.type'] !== '#microsoft.graph.passwordAuthenticationMethod'
+        );
+        
+        usersWithMfaStatus.push({
+          userId: user.id,
+          displayName: user.displayName,
+          userPrincipalName: user.userPrincipalName,
+          hasMfa,
+          authMethods: methods.map(m => m['@odata.type'])
+        });
+        
+      } catch (error) {
+        console.warn(`⚠️  Could not check MFA for user ${user.displayName}:`, error.message);
+        // Skip this user
+      }
+    }
+    
+    console.log(`✅ Checked MFA status for ${usersWithMfaStatus.length} users`);
+    return usersWithMfaStatus;
+    
+  } catch (error) {
+    console.warn('⚠️  Could not get users with MFA status:', error.message);
+    return [];
+  }
+}
 
   async generateComplianceReport() {
     console.log('🔍 Starting compliance evidence collection...');
@@ -341,16 +482,51 @@ class ComplianceReporter {
     }
 
     // Firewall APIs (skip if not configured)
-    if (this.config.resources.firewallPolicy && this.config.resources.firewallResourceGroup) {
-      try {
-        evidence.firewallPolicies = await this.getFirewallPolicies();
-      } catch (error) {
-        console.warn('⚠️  Could not get firewall policies:', error.message);
-        evidence.firewallPolicies = { value: [] };
-      }
-    } else {
+     if (this.config.resources.firewallPolicy && this.config.resources.firewallResourceGroup) {
+    try {
+      evidence.firewallPolicies = await this.getFirewallPolicies();
+    } catch (error) {
+      console.warn('⚠️  Could not get firewall policies:', error.message);
       evidence.firewallPolicies = { value: [] };
     }
+
+    try {
+      evidence.firewallRuleCollections = await this.getRuleCollectionGroups();
+    } catch (error) {
+      console.warn('⚠️  Could not get firewall rule collections:', error.message);
+      evidence.firewallRuleCollections = { value: [] };
+    }
+
+    // ADD THIS - IDPS Signatures
+    try {
+      console.log('🔥 Fetching firewall IDPS signatures...');
+      evidence.idpsSignatures = await this.listIdpsSignatures(
+        [], // no filters - get all
+        "", // no search
+        { field: "severity", order: "Descending" }, // order by severity
+        100, // get more results
+        0
+      );
+    } catch (error) {
+      console.warn('⚠️  Could not get IDPS signatures:', error.message);
+      evidence.idpsSignatures = { matchingRecordsCount: 0, signatures: [] };
+    }
+
+    // ADD THIS - Signature Overrides
+    try {
+      console.log('🔥 Fetching firewall signature overrides...');
+      evidence.signatureOverrides = await this.getSignatureOverrides();
+    } catch (error) {
+      console.warn('⚠️  Could not get signature overrides:', error.message);
+      evidence.signatureOverrides = { properties: { signatures: {} } };
+    }
+
+  } else {
+    evidence.firewallPolicies = { value: [] };
+    evidence.firewallRuleCollections = { value: [] };
+    evidence.idpsSignatures = { matchingRecordsCount: 0, signatures: [] };
+    evidence.signatureOverrides = { properties: { signatures: {} } };
+  }
 
     // Graph APIs
     try {
@@ -382,6 +558,14 @@ class ComplianceReporter {
       evidence.riskyUsers = { value: [] };
     }
 
+     try {
+    console.log('🔐 Checking MFA compliance for users...');
+    evidence.usersWithMfaStatus = await this.getUsersWithMfaStatus();
+    } catch (error) {
+    console.warn('⚠️  Could not get users MFA status:', error.message);
+    evidence.usersWithMfaStatus = [];
+    }
+
     // Generate report with whatever data we got
     const report = {
       metadata: {
@@ -394,7 +578,9 @@ class ComplianceReporter {
         devicesTotal: evidence.devices?.value?.length || 0,
         activeAlerts: evidence.alerts?.value?.filter(a => a.status === 'New').length || 0,
         criticalVulnerabilities: evidence.vulnerabilities?.value?.filter(v => v.severity === 'Critical').length || 0,
-        mfaCompliance: this.calculateMfaCompliance(evidence),
+        mfaCompliance: this.calculateMfaCompliance(evidence.usersWithMfaStatus),
+        firewallThreatsDetected: evidence.idpsSignatures?.matchingRecordsCount || 0,
+        firewallSignatureOverrides: Object.keys(evidence.signatureOverrides?.properties?.signatures || {}).length,
       },
       evidence,
     };
@@ -403,13 +589,31 @@ class ComplianceReporter {
     return report;
   }
 
-  calculateMfaCompliance(evidence) {
+  calculateMfaCompliance(usersWithMfaStatus) {
+  if (!usersWithMfaStatus || usersWithMfaStatus.length === 0) {
     return {
       compliant: 0,
       nonCompliant: 0,
       percentage: 0,
+      totalUsers: 0,
+      details: 'No user MFA data available',
+      users: []
     };
   }
+
+  const compliant = usersWithMfaStatus.filter(u => u.hasMfa).length;
+  const nonCompliant = usersWithMfaStatus.length - compliant;
+  const percentage = Math.round((compliant / usersWithMfaStatus.length) * 100);
+
+  return {
+    compliant,
+    nonCompliant,
+    percentage,
+    totalUsers: usersWithMfaStatus.length,
+    details: `${compliant} out of ${usersWithMfaStatus.length} users have MFA enabled`,
+    users: usersWithMfaStatus // Include detailed user data
+  };
+}
 }
 
 // ============================================================================

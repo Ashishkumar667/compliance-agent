@@ -774,7 +774,7 @@ app.get('/api/compliance/risky-users', async (req, res, next) => {
   try {
     const agent = req.complianceAgent;
     const riskyUsers = await agent.reporter.getRiskyUsers();
-    
+        
     res.json({
       success: true,
       data: riskyUsers,
@@ -808,27 +808,169 @@ app.get('/api/compliance/firewall-policies', async (req, res, next) => {
   }
 });
 
+app.post('/api/compliance/firewall/idps/signatures', async (req, res, next) => {
+  try {
+    const agent = req.complianceAgent;
+
+    const {
+      filters = [],
+      search = "",
+      orderBy = null,
+      resultsPerPage = 20,
+      skip = 0
+    } = req.body;
+
+    const signatures = await agent.reporter.listIdpsSignatures(
+      filters,
+      search,
+      orderBy,
+      resultsPerPage,
+      skip
+    );
+    console.log('Signatures response:', signatures);
+    res.json({
+      success: true,
+      data: signatures,
+      tenant: req.credentials.tenantId,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get('/api/compliance/firewall/idps/signature-overrides', async (req, res, next) => {
+  try {
+    const agent = req.complianceAgent;
+
+    const overrides = await agent.reporter.getSignatureOverrides();
+
+    res.json({
+      success: true,
+      data: overrides,
+      tenant: req.credentials.tenantId,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.put('/api/compliance/firewall/idps/signature-overrides', async (req, res, next) => {
+  try {
+    const agent = req.complianceAgent;
+
+    const { signatures = {} } = req.body;
+
+    const response = await agent.reporter.updateSignatureOverrides(signatures);
+
+    res.json({
+      success: true,
+      data: response,
+      tenant: req.credentials.tenantId,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post('/api/compliance/firewall/idps/filter-options', async (req, res, next) => {
+  try {
+    const agent = req.complianceAgent;
+
+    const { filterName } = req.body;
+
+    const options = await agent.reporter.listIdpsFilterOptions(filterName);
+
+    res.json({
+      success: true,
+      data: options,
+      tenant: req.credentials.tenantId,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 /**
  * GET /api/compliance/sign-ins
  */
 app.get('/api/compliance/sign-ins', async (req, res, next) => {
+  // Increase timeout for this route to 4 minutes
+  req.setTimeout(240000);
+  res.setTimeout(240000);
+  
   try {
     const agent = req.complianceAgent;
     const filters = {};
     
-    if (req.query.riskLevel) {
-      filters.$filter = `riskLevel eq '${req.query.riskLevel}'`;
+    // Parse date range if provided
+    if (req.query.startDate && req.query.endDate) {
+      filters.startDate = new Date(req.query.startDate).toISOString();
+      filters.endDate = new Date(req.query.endDate).toISOString();
+    } else if (req.query.days) {
+      filters.days = parseInt(req.query.days);
     }
     
+    // Add risk level filter
+    if (req.query.riskLevel) {
+      filters.$filter = `riskLevelDuringSignIn eq '${req.query.riskLevel}'`;
+    }
+    
+    // Add top (limit)
+    if (req.query.limit) {
+      filters.$top = parseInt(req.query.limit);
+    }
+    
+    // Add orderby
+    if (req.query.orderby) {
+      filters.$orderby = req.query.orderby;
+    }
+    
+    console.log('Fetching sign-ins with filters:', filters);
+    
+    const startTime = Date.now();
     const signIns = await agent.reporter.getSignInLogs(filters);
+    const duration = Date.now() - startTime;
+    
+    console.log(`✅ Sign-ins fetched in ${duration}ms:`, {
+      count: signIns?.value?.length || 0,
+      hasNextLink: !!signIns?.['@odata.nextLink']
+    });
     
     res.json({
       success: true,
       data: signIns,
+      count: signIns?.value?.length || 0,
+      hasMore: !!signIns?.['@odata.nextLink'],
+      nextLink: signIns?.['@odata.nextLink'],
+      duration: `${duration}ms`,
       tenant: req.credentials.tenantId,
       timestamp: new Date().toISOString(),
     });
   } catch (error) {
+    console.error('Sign-ins API error:', {
+      message: error.message,
+      code: error.code,
+      status: error.response?.status
+    });
+    
+    if (error.message.includes('timed out')) {
+      return res.status(504).json({
+        success: false,
+        error: 'Request timed out',
+        message: 'The query took too long to complete',
+        suggestion: 'Try using a smaller date range or add a limit parameter',
+        examples: {
+          'Last 1 day': '/api/compliance/sign-ins?days=1',
+          'With limit': '/api/compliance/sign-ins?days=7&limit=100',
+          'Date range': '/api/compliance/sign-ins?startDate=2024-01-01&endDate=2024-01-07'
+        }
+      });
+    }
+    
     next(error);
   }
 });

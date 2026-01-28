@@ -839,6 +839,45 @@ app.post('/api/compliance/firewall/idps/signatures', async (req, res, next) => {
   }
 });
 
+app.get('/api/compliance/firewall/ip-configurations', async (req, res, next) => {
+  try {
+    const agent = req.complianceAgent;
+    
+    const config = await agent.reporter.getFirewallIpConfigurations();
+    
+    res.json({
+      success: true,
+      data: config,
+      tenant: req.credentials.tenantId,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Firewall IP config error:', error.message);
+    next(error);
+  }
+});
+
+app.get('/api/compliance/network-security-groups', async (req, res, next) => {
+  try {
+    const agent = req.complianceAgent;
+    
+    console.log('🛡️  Fetching all Network Security Groups...');
+    
+    const nsgs = await agent.reporter.getNetworkSecurityGroups();
+    
+    res.json({
+      success: true,
+      data: nsgs,
+      count: nsgs.value?.length || 0,
+      tenant: req.credentials.tenantId,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('NSG list error:', error.message);
+    next(error);
+  }
+});
+
 app.get('/api/compliance/firewall/idps/signature-overrides', async (req, res, next) => {
   try {
     const agent = req.complianceAgent;
@@ -975,6 +1014,21 @@ app.get('/api/compliance/sign-ins', async (req, res, next) => {
   }
 });
 
+app.get('/api/compliance/mfa-reports', async( req, res, next) => {
+  try {
+    const agent = req.complianceAgent;
+    const mfaReports = await agent.reporter.getUsersWithMfaStatus();
+
+    res.json({
+      success: true,
+      data: mfaReports,
+      tenant: req.credentials.tenantId,
+      timestamp: new Date().toISOString(),
+    });
+  } catch (error) {
+    next(error);
+  }
+})
 /**
  * GET /api/compliance/directory-audits
  */

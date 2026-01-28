@@ -122,6 +122,7 @@ class ApiClient {
         switch (tokenType) {
           case 'defender':
             token = await this.auth.getDefenderToken();
+            // console.log(`Using defender token for request to ${url}`, token);
             break;
           case 'graph':
             token = await this.auth.getGraphToken();
@@ -129,6 +130,7 @@ class ApiClient {
             break;
           default:
             token = await this.auth.getManagementToken();
+            console.log(`Using management token for request to ${url}`, token);
         }
 
         const response = await axios({
@@ -284,7 +286,7 @@ class ComplianceReporter {
 }
 
   async getSignatureOverrides() {
-    const url = `https://management.azure.com/subscriptions/${this.config.resources.subscriptionId}/resourceGroups/${this.config.resources.firewallResourceGroup}/providers/Microsoft.Network/firewallPolicies/${this.config.resources.firewallPolicy}/signatureOverrides/default?api-version=2025-03-01`;
+    const url = `https://management.azure.com/subscriptions/${this.config.resources.subscriptionId}/resourceGroups/${this.config.resources.firewallResourceGroup}/providers/Microsoft.Network/firewallPolicies/${this.config.resources.firewallPolicy}?api-version=2025-03-01`;
     return this.api.request(url, { method: 'GET' });
   }
 
@@ -303,6 +305,28 @@ class ComplianceReporter {
 
     return this.api.request(url, { method: 'PUT', body });
   }
+
+  async getFirewallIpConfigurations() {
+  const url = `https://management.azure.com/subscriptions/${this.config.resources.subscriptionId}/providers/Microsoft.Network/azureFirewalls?api-version=2025-03-01`;
+  
+  const response = await this.api.request(url, { method: 'GET' });
+  
+  // Extract IP configurations
+  return {
+    name: response.name,
+    location: response.location,
+    ipConfigurations: response.properties?.ipConfigurations || [],
+    managementIpConfiguration: response.properties?.managementIpConfiguration,
+    sku: response.sku,
+    threatIntelMode: response.properties?.threatIntelMode,
+    firewallPolicy: response.properties?.firewallPolicy
+  };
+}
+
+async getNetworkSecurityGroups() {
+  const url = `https://management.azure.com/subscriptions/${this.config.resources.subscriptionId}/providers/Microsoft.Network/networkSecurityGroups?api-version=2023-11-01`;
+  return this.api.request(url, { method: 'GET' });
+}
 
   async listIdpsFilterOptions(filterName) {
     const url = `https://management.azure.com/subscriptions/${this.config.resources.subscriptionId}/resourceGroups/${this.config.resources.firewallResourceGroup}/providers/Microsoft.Network/firewallPolicies/${this.config.resources.firewallPolicy}/listIdpsFilterOptions?api-version=2025-03-01`;

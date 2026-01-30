@@ -41,7 +41,7 @@ class AuthManager {
     if (!config.auth.clientId || !config.auth.clientSecret || !config.auth.tenantId) {
       throw new Error('Missing required auth credentials: clientId, clientSecret, tenantId');
     }
-
+    console.log("configuration", config.auth.clientId, config.auth.tenantId, config.auth.clientSecret, config.resources);
     this.config = config;
     this.msalClient = new msal.ConfidentialClientApplication({
       auth: {

@@ -614,7 +614,7 @@ app.get('/api/compliance/recommendations', async (req, res, next) => {
     else if (typeof recommendations === "object") data = Object.values(recommendations);
 
     const page = parseInt(req.query.page) || 1;
-    const limit = parseInt(req.query.limit) || 2500;
+    const limit = parseInt(req.query.limit) || 1000;
 
     const paginated = data.slice((page - 1) * limit, page * limit);
 
@@ -827,7 +827,9 @@ app.post('/api/compliance/firewall/idps/signatures', async (req, res, next) => {
       resultsPerPage,
       skip
     );
+
     console.log('Signatures response:', signatures);
+
     res.json({
       success: true,
       data: signatures,
@@ -838,6 +840,7 @@ app.post('/api/compliance/firewall/idps/signatures', async (req, res, next) => {
     next(error);
   }
 });
+
 
 app.get('/api/compliance/firewall/ip-configurations', async (req, res, next) => {
   try {
@@ -881,7 +884,6 @@ app.get('/api/compliance/network-security-groups', async (req, res, next) => {
 app.get('/api/compliance/firewall/idps/signature-overrides', async (req, res, next) => {
   try {
     const agent = req.complianceAgent;
-
     const overrides = await agent.reporter.getSignatureOverrides();
 
     res.json({
@@ -921,7 +923,7 @@ app.post('/api/compliance/firewall/idps/filter-options', async (req, res, next) 
     const { filterName } = req.body;
 
     const options = await agent.reporter.listIdpsFilterOptions(filterName);
-
+    console.log('Filter options response:', options);
     res.json({
       success: true,
       data: options,

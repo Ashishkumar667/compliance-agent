@@ -4,6 +4,7 @@
 // ============================================================================
 
 const { ComplianceAgent } = require('./compliance-agent');
+require('dotenv').config();
 
 // Cache agents per tenant to avoid re-initialization
 const agentCache = new Map();
@@ -13,7 +14,18 @@ const CACHE_TTL = 30 * 60 * 1000; // 30 minutes
 // Extract and Validate Headers
 // ============================================================================
 
+
+
 function extractCredentials(req) {
+  const getValidValue = (headerValue, envValue) => {
+    // If header has a real value (not undefined/null/empty string), use it
+    if (headerValue && headerValue !== 'undefined' && headerValue !== 'null' && headerValue.trim() !== '') {
+      return headerValue;
+    }
+    // Otherwise fall back to env
+     return envValue || undefined;
+  }
+
   const credentials = {
     clientId: req.headers['x-azure-client-id'] || process.env.AZURE_CLIENT_ID,
     clientSecret: req.headers['x-azure-client-secret'] || process.env.AZURE_CLIENT_SECRET,
@@ -21,13 +33,12 @@ function extractCredentials(req) {
     subscriptionId: req.headers['x-azure-subscription-id'] || process.env.AZURE_SUBSCRIPTION_ID,
     
     // Optional: Sentinel configuration
-    sentinelWorkspaceId: req.headers['x-sentinel-workspace-id'] || process.env.SENTINEL_WORKSPACE_ID,
-    sentinelResourceGroup: req.headers['x-sentinel-resource-group'] || process.env.SENTINEL_RESOURCE_GROUP,
+    sentinelWorkspaceId: getValidValue(req.headers['x-sentinel-workspace-id'], process.env.SENTINEL_WORKSPACE_ID),
+    sentinelResourceGroup: getValidValue(req.headers['x-sentinel-resource-group'], process.env.SENTINEL_RESOURCE_GROUP),
     
     // Optional: Firewall configuration
-    firewallPolicy: req.headers['x-firewall-policy'] || process.env.FIREWALL_POLICY_NAME,
-    firewallResourceGroup: req.headers['x-firewall-resource-group'] || process.env.FIREWALL_RESOURCE_GROUP,
-    
+    firewallPolicy: getValidValue(req.headers['x-firewall-policy'], process.env.FIREWALL_POLICY_NAME),
+    firewallResourceGroup: getValidValue(req.headers['x-firewall-resource-group'], process.env.FIREWALL_RESOURCE_GROUP),
     // Optional: Defender resource ID
     defenderResourceId: req.headers['x-defender-resource-id'] || process.env.DEFENDER_RESOURCE_ID,
   };

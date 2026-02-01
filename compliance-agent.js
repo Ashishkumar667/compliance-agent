@@ -254,13 +254,14 @@ class ComplianceReporter {
   // Firewall endpoints
   async getFirewallPolicies() {
     const url = `https://management.azure.com/subscriptions/${this.config.resources.subscriptionId}/resourceGroups/${this.config.resources.firewallResourceGroup}/providers/Microsoft.Network/firewallPolicies?api-version=2023-05-01`;
-    return this.api.request(url);
+    return this.api.request(url, { method: 'GET' });
   }
 
   async getRuleCollectionGroups() {
     const url = `https://management.azure.com/subscriptions/${this.config.resources.subscriptionId}/resourceGroups/${this.config.resources.firewallResourceGroup}/providers/Microsoft.Network/firewallPolicies/${this.config.resources.firewallPolicy}/ruleCollectionGroups?api-version=2023-05-01`;
-    return this.api.request(url);
+    return this.api.request(url, { method: 'GET' });
   }
+  
   async listIdpsSignatures(filters = [], search = "", orderBy = null, resultsPerPage = 20, skip = 0) {
   const url = `https://management.azure.com/subscriptions/${this.config.resources.subscriptionId}/resourceGroups/${this.config.resources.firewallResourceGroup}/providers/Microsoft.Network/firewallPolicies/${this.config.resources.firewallPolicy}/listIdpsSignatures?api-version=2025-03-01`;
   
@@ -307,20 +308,9 @@ class ComplianceReporter {
   }
 
   async getFirewallIpConfigurations() {
-  const url = `https://management.azure.com/subscriptions/${this.config.resources.subscriptionId}/providers/Microsoft.Network/azureFirewalls?api-version=2025-03-01`;
-  
-  const response = await this.api.request(url, { method: 'GET' });
-  
-  // Extract IP configurations
-  return {
-    name: response.name,
-    location: response.location,
-    ipConfigurations: response.properties?.ipConfigurations || [],
-    managementIpConfiguration: response.properties?.managementIpConfiguration,
-    sku: response.sku,
-    threatIntelMode: response.properties?.threatIntelMode,
-    firewallPolicy: response.properties?.firewallPolicy
-  };
+  // const url = `https://management.azure.com/subscriptions/${this.config.resources.subscriptionId}/providers/Microsoft.Network/azureFirewalls?api-version=2025-03-01`;
+  const url = `https://management.azure.com/subscriptions/${this.config.resources.subscriptionId}/resourceGroups/${this.config.resources.firewallResourceGroup}/providers/Microsoft.Network/azureFirewalls?api-version=2025-03-01`
+  return this.api.request(url, { method: 'GET' });
 }
 
 async getNetworkSecurityGroups() {
